@@ -1,4 +1,4 @@
-# TODO: Add Apache license header
+# TODO: Add license header
 """
 Schema-based tenant isolation for Superset metadata.
 
@@ -22,41 +22,34 @@ Security guarantees:
 - Cross-tenant access requires explicit schema qualification (blocked by permissions)
 """
 
+from __future__ import annotations
+
 import logging
 from contextlib import contextmanager
-from typing import Optional
+from typing import Generator, Optional
 
-from flask import Flask, g
+from flask import Flask, g, has_request_context
 from sqlalchemy import text
+
+from superset.multitenancy.isolation.schema_isolation import get_tenant_schema
 
 logger = logging.getLogger(__name__)
 
 
 def get_current_tenant_id() -> Optional[str]:
     """
-    Get the current tenant ID from request context.
+    Get the current tenant ID (slug) from request context.
 
     Returns:
-        Tenant ID string (e.g., "acme", "demo") or None
+        Tenant slug string (e.g., "acme", "demo") or None
     """
+    if not has_request_context():
+        return None
     return g.get("tenant_id")
 
 
-def get_tenant_schema(tenant_id: str) -> str:
-    """
-    Convert tenant ID to schema name.
-
-    Args:
-        tenant_id: Tenant subdomain (e.g., "acme", "demo")
-
-    Returns:
-        Schema name (e.g., "tenant_acme", "tenant_demo")
-    """
-    return f"tenant_{tenant_id}"
-
-
 @contextmanager
-def tenant_context(tenant_id: str):
+def tenant_context(tenant_id: str) -> Generator[None, None, None]:
     """
     Context manager for setting tenant context in scripts.
 
@@ -69,7 +62,7 @@ def tenant_context(tenant_id: str):
             dashboards = Dashboard.query.all()
 
     Args:
-        tenant_id: Tenant subdomain (e.g., "acme", "demo")
+        tenant_id: Tenant slug (e.g., "acme", "demo")
 
     Yields:
         None
@@ -97,4 +90,6 @@ def setup_metadata_isolation(app: Flask) -> None:
     Args:
         app: Flask application instance
     """
-    logger.info("Schema-based tenant isolation initialized (search_path set by middleware)")
+    logger.info(
+        "Schema-based tenant isolation initialized (search_path set by middleware)"
+    )

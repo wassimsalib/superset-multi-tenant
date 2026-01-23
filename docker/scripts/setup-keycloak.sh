@@ -321,17 +321,17 @@ echo -e "${YELLOW}[2/5]${NC} Setting up Demo tenant realm..."
 
 DEMO_CLIENT_SECRET_INITIAL="demo-secret-$(openssl rand -hex 8)"
 
-create_realm "demo-realm"
-create_client "demo-realm" "superset-demo" "$DEMO_CLIENT_SECRET_INITIAL" "demo"
+create_realm "demo"
+create_client "demo" "superset" "$DEMO_CLIENT_SECRET_INITIAL" "demo"
 # Use the actual secret from Keycloak (either newly created or regenerated)
 DEMO_CLIENT_SECRET="$RETURNED_CLIENT_SECRET"
-setup_realm_groups "demo-realm"
-add_group_mapper "demo-realm" "superset-demo"
-create_user "demo-realm" "demo-admin" "admin@demo.local" "demo123" "Demo" "Admin"
-create_user "demo-realm" "demo-user" "user@demo.local" "demo123" "Demo" "User"
+setup_realm_groups "demo"
+add_group_mapper "demo" "superset"
+create_user "demo" "demo-admin" "admin@demo.local" "demo123" "Demo" "Admin"
+create_user "demo" "demo-user" "user@demo.local" "demo123" "Demo" "User"
 # Assign users to groups (admin gets full access, user gets viewer access)
-add_user_to_group "demo-realm" "demo-admin" "superset-admin"
-add_user_to_group "demo-realm" "demo-user" "superset-gamma"
+add_user_to_group "demo" "demo-admin" "superset-admin"
+add_user_to_group "demo" "demo-user" "superset-gamma"
 
 echo ""
 
@@ -342,17 +342,17 @@ echo -e "${YELLOW}[3/5]${NC} Setting up Acme tenant realm..."
 
 ACME_CLIENT_SECRET_INITIAL="acme-secret-$(openssl rand -hex 8)"
 
-create_realm "acme-realm"
-create_client "acme-realm" "superset-acme" "$ACME_CLIENT_SECRET_INITIAL" "acme"
+create_realm "acme"
+create_client "acme" "superset" "$ACME_CLIENT_SECRET_INITIAL" "acme"
 # Use the actual secret from Keycloak (either newly created or regenerated)
 ACME_CLIENT_SECRET="$RETURNED_CLIENT_SECRET"
-setup_realm_groups "acme-realm"
-add_group_mapper "acme-realm" "superset-acme"
-create_user "acme-realm" "acme-admin" "admin@acme.local" "acme123" "Acme" "Admin"
-create_user "acme-realm" "acme-user" "user@acme.local" "acme123" "Acme" "User"
+setup_realm_groups "acme"
+add_group_mapper "acme" "superset"
+create_user "acme" "acme-admin" "admin@acme.local" "acme123" "Acme" "Admin"
+create_user "acme" "acme-user" "user@acme.local" "acme123" "Acme" "User"
 # Assign users to groups (admin gets full access, user gets viewer access)
-add_user_to_group "acme-realm" "acme-admin" "superset-admin"
-add_user_to_group "acme-realm" "acme-user" "superset-gamma"
+add_user_to_group "acme" "acme-admin" "superset-admin"
+add_user_to_group "acme" "acme-user" "superset-gamma"
 
 echo ""
 
@@ -361,51 +361,62 @@ echo ""
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}[4/5]${NC} Creating/updating Superset tenant records..."
 
-docker compose -f "$COMPOSE_FILE" exec superset python3 -c "
+docker compose -f "$COMPOSE_FILE" exec -T superset python3 << PYTHON_EOF
 import sys
-sys.path.insert(0, '/app/docker/pythonpath_dev')
-from superset import create_app, db
-app = create_app()
-with app.app_context():
-    from keycloak_multi_tenant.models import Tenant
+try:
+    from superset import create_app
+    from superset.extensions import db
+    app = create_app()
+    with app.app_context():
+        from superset.multitenancy.models import Tenant
 
-    # Demo tenant - create or update
-    demo = db.session.query(Tenant).filter_by(tenant_id='demo').first()
-    if not demo:
-        demo = Tenant(
-            tenant_id='demo',
-            name='Demo Company',
-            subdomain='demo',
-            keycloak_realm='demo-realm',
-            keycloak_client_id='superset-demo',
-            keycloak_client_secret='${DEMO_CLIENT_SECRET}'
-        )
-        db.session.add(demo)
-        print('Created demo tenant')
-    else:
-        demo.set_encrypted_secret('${DEMO_CLIENT_SECRET}')
-        print('Updated demo tenant secret')
+        # Demo tenant - create or update
+        demo = db.session.query(Tenant).filter_by(slug='demo').first()
+        if not demo:
+            demo = Tenant(
+                slug='demo',
+                name='Demo Company',
+                oauth_issuer='http://host.docker.internal:8180/realms/demo',
+                client_id='superset',
+            )
+            demo.set_encrypted_secret('${DEMO_CLIENT_SECRET}')
+            db.session.add(demo)
+            print('  Created demo tenant')
+        else:
+            demo.oauth_issuer = 'http://host.docker.internal:8180/realms/demo'
+            demo.client_id = 'superset'
+            demo.set_encrypted_secret('${DEMO_CLIENT_SECRET}')
+            print('  Updated demo tenant')
 
-    # Acme tenant - create or update
-    acme = db.session.query(Tenant).filter_by(tenant_id='acme').first()
-    if not acme:
-        acme = Tenant(
-            tenant_id='acme',
-            name='Acme Corporation',
-            subdomain='acme',
-            keycloak_realm='acme-realm',
-            keycloak_client_id='superset-acme',
-            keycloak_client_secret='${ACME_CLIENT_SECRET}'
-        )
-        db.session.add(acme)
-        print('Created acme tenant')
-    else:
-        acme.set_encrypted_secret('${ACME_CLIENT_SECRET}')
-        print('Updated acme tenant secret')
+        # Acme tenant - create or update
+        acme = db.session.query(Tenant).filter_by(slug='acme').first()
+        if not acme:
+            acme = Tenant(
+                slug='acme',
+                name='Acme Corporation',
+                oauth_issuer='http://host.docker.internal:8180/realms/acme',
+                client_id='superset',
+            )
+            acme.set_encrypted_secret('${ACME_CLIENT_SECRET}')
+            db.session.add(acme)
+            print('  Created acme tenant')
+        else:
+            acme.oauth_issuer = 'http://host.docker.internal:8180/realms/acme'
+            acme.client_id = 'superset'
+            acme.set_encrypted_secret('${ACME_CLIENT_SECRET}')
+            print('  Updated acme tenant')
 
-    db.session.commit()
-    print('Tenant records ready!')
-"
+        db.session.commit()
+        print('  Tenant records ready!')
+except Exception as e:
+    print(f'ERROR creating tenants: {e}', file=sys.stderr)
+    sys.exit(1)
+PYTHON_EOF
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}✗${NC} Failed to create tenant records"
+    exit 1
+fi
 
 echo -e "${GREEN}✓${NC} Tenant records created/updated in Superset"
 echo ""
@@ -424,13 +435,13 @@ echo "  URL: ${KEYCLOAK_URL}"
 echo "  Username: ${KEYCLOAK_ADMIN}"
 echo "  Password: ${KEYCLOAK_ADMIN_PASSWORD}"
 echo ""
-echo "Demo Tenant (demo-realm):"
+echo "Demo Tenant (realm: demo):"
 echo "  Superset URL: http://demo.app.localhost"
 echo "  Test Users:"
 echo "    - demo-admin / demo123"
 echo "    - demo-user / demo123"
 echo ""
-echo "Acme Tenant (acme-realm):"
+echo "Acme Tenant (realm: acme):"
 echo "  Superset URL: http://acme.app.localhost"
 echo "  Test Users:"
 echo "    - acme-admin / acme123"

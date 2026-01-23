@@ -138,25 +138,25 @@ if os.getenv("CYPRESS_CONFIG") == "true":
     sys.path.pop(0)
 
 # =============================================================================
-# MULTI-TENANT KEYCLOAK AUTHENTICATION
+# MULTI-TENANT AUTHENTICATION
 # =============================================================================
 
-# Enable multi-tenant mode
+# Enable multi-tenant mode via config or feature flag
 MULTI_TENANT_ENABLED = os.getenv("MULTI_TENANT_ENABLED", "true").lower() == "true"
 
+# Feature flag for multi-tenancy (can also be controlled via FEATURE_FLAGS)
+FEATURE_FLAGS["MULTI_TENANCY_ENABLED"] = MULTI_TENANT_ENABLED
+
 if MULTI_TENANT_ENABLED:
-    from keycloak_multi_tenant import KeycloakMultiTenantSecurityManager
-    from keycloak_multi_tenant.middleware import setup_tenant_middleware
-    from keycloak_multi_tenant.rls import register_tenant_jinja_context
-    from keycloak_multi_tenant.metadata_isolation import setup_metadata_isolation
-    from keycloak_multi_tenant.admin import register_admin_views
-    from keycloak_multi_tenant.db_isolation import init_db_isolation
+    # NOTE: The MultiTenantSecurityManager uses a lazy proxy pattern to avoid
+    # circular imports. The actual class is created when first instantiated.
+    from superset.multitenancy.security_manager import MultiTenantSecurityManager
 
     # Authentication type
     AUTH_TYPE = AUTH_OAUTH
 
-    # Custom security manager
-    CUSTOM_SECURITY_MANAGER = KeycloakMultiTenantSecurityManager
+    # Custom security manager - uses lazy proxy to defer the actual class creation
+    CUSTOM_SECURITY_MANAGER = MultiTenantSecurityManager
 
     # OAuth providers - starts empty, dynamically populated per-tenant
     OAUTH_PROVIDERS = []
@@ -192,7 +192,7 @@ if MULTI_TENANT_ENABLED:
         "/logout/",
     ]
 
-    # Role mapping: Keycloak groups -> Superset roles
+    # Role mapping: OAuth groups -> Superset roles
     AUTH_ROLES_MAPPING = {
         "superset-admin": ["Admin"],
         "superset-alpha": ["Alpha"],
@@ -203,18 +203,17 @@ if MULTI_TENANT_ENABLED:
 
     # Allow OAuth users to self-register
     AUTH_USER_REGISTRATION = True
-    # Default role for new OAuth users (when no Keycloak groups match)
+    # Default role for new OAuth users (when no OAuth groups match)
     AUTH_USER_REGISTRATION_ROLE = "Gamma"
 
     # Flask app initialization hook
     def FLASK_APP_MUTATOR(app):
         """Initialize multi-tenant components."""
-        setup_tenant_middleware(app)
-        register_tenant_jinja_context(app)
-        setup_metadata_isolation(app)
-        register_admin_views(app)
-        init_db_isolation(app)
-        logger.info("Multi-tenant Keycloak authentication initialized")
+        # Lazy import to avoid circular imports during config loading
+        from superset.multitenancy import init_multi_tenancy
+
+        init_multi_tenancy(app)
+        logger.info("Multi-tenant authentication initialized")
 
     logger.info("Multi-tenant configuration loaded")
 else:

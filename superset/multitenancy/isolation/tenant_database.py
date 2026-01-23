@@ -1,19 +1,4 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
+# TODO: Add license header
 """
 Per-Tenant Database Connection Manager.
 
@@ -28,17 +13,22 @@ Security Model:
     - Connection pooling per tenant for performance
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse, urlunparse
 
-from flask import current_app, g
+from flask import current_app, g, has_request_context
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.pool import QueuePool
 
-from .db_isolation import get_tenant_schema
+from superset.multitenancy.isolation.schema_isolation import get_tenant_schema
+
+if TYPE_CHECKING:
+    from superset.multitenancy.models import Tenant
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +41,8 @@ class TenantDatabaseManager:
     are restricted to only the tenant's schema.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the tenant database manager."""
-        # Cache of engines per tenant for connection pooling
         self._tenant_engines: dict[str, Engine] = {}
 
     def get_tenant_engine(
@@ -68,7 +57,7 @@ class TenantDatabaseManager:
         to their schema.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
             base_uri: Base database URI (defaults to WAREHOUSE_DATABASE_URI)
 
         Returns:
@@ -77,32 +66,29 @@ class TenantDatabaseManager:
         # Check cache first
         if tenant_id in self._tenant_engines:
             engine = self._tenant_engines[tenant_id]
-            # Verify engine is still valid
             try:
                 with engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
                 return engine
             except (OperationalError, DatabaseError):
-                # Engine is stale, remove from cache
                 del self._tenant_engines[tenant_id]
 
         # Get tenant from database
-        from .models import Tenant
+        from superset.multitenancy.models import Tenant
 
-        tenant = Tenant.query.filter_by(tenant_id=tenant_id, is_active=True).first()
+        tenant = Tenant.query.filter_by(slug=tenant_id, is_active=True).first()
         if not tenant:
-            logger.warning(f"Tenant not found: {tenant_id}")
+            logger.warning("Tenant not found: %s", tenant_id)
             return None
 
-        # Check if tenant has warehouse credentials
         if not tenant.has_warehouse_credentials():
             logger.warning(
-                f"Tenant {tenant_id} does not have warehouse credentials configured. "
-                "Falling back to shared connection (NOT SECURE)."
+                "Tenant %s does not have warehouse credentials configured. "
+                "Falling back to shared connection (NOT SECURE).",
+                tenant_id,
             )
             return None
 
-        # Build connection URI with tenant credentials
         creds = tenant.get_warehouse_connection_info()
         if not creds:
             return None
@@ -116,7 +102,6 @@ class TenantDatabaseManager:
         if not tenant_uri:
             return None
 
-        # Create engine with connection pooling
         try:
             schema = get_tenant_schema(tenant_id)
             engine = create_engine(
@@ -125,27 +110,22 @@ class TenantDatabaseManager:
                 pool_size=5,
                 max_overflow=10,
                 pool_pre_ping=True,
-                connect_args={
-                    "options": f"-csearch_path={schema},public"
-                },
+                connect_args={"options": f"-csearch_path={schema},public"},
             )
 
-            # Verify connection works
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
 
-            # Cache for reuse
             self._tenant_engines[tenant_id] = engine
-            logger.info(f"Created tenant engine for {tenant_id}")
+            logger.info("Created tenant engine for %s", tenant_id)
             return engine
 
         except Exception as e:
-            logger.error(f"Failed to create tenant engine for {tenant_id}: {e}")
+            logger.error("Failed to create tenant engine for %s: %s", tenant_id, e)
             return None
 
     def _get_warehouse_base_uri(self) -> str:
         """Get the base warehouse database URI from config."""
-        # Use WAREHOUSE_DATABASE_URI if set, otherwise fall back to examples URI
         return current_app.config.get(
             "WAREHOUSE_DATABASE_URI",
             current_app.config.get("SQLALCHEMY_EXAMPLES_URI", ""),
@@ -174,41 +154,40 @@ class TenantDatabaseManager:
         try:
             parsed = urlparse(base_uri)
 
-            # Replace username and password
-            # netloc format: user:pass@host:port
             netloc = f"{username}:{password}@{parsed.hostname}"
             if parsed.port:
                 netloc += f":{parsed.port}"
 
-            # Reconstruct URI
-            tenant_uri = urlunparse((
-                parsed.scheme,
-                netloc,
-                parsed.path,
-                parsed.params,
-                parsed.query,
-                parsed.fragment,
-            ))
+            tenant_uri = urlunparse(
+                (
+                    parsed.scheme,
+                    netloc,
+                    parsed.path,
+                    parsed.params,
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
 
             return tenant_uri
 
         except Exception as e:
-            logger.error(f"Failed to build tenant URI: {e}")
+            logger.error("Failed to build tenant URI: %s", e)
             return None
 
     def execute_query(
         self,
         tenant_id: str,
         sql: str,
-        params: Optional[dict] = None,
-    ):
+        params: Optional[dict[str, Any]] = None,
+    ) -> Any:
         """
         Execute a query using tenant-specific credentials.
 
         This is the secure way to run queries against the data warehouse.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
             sql: SQL query to execute
             params: Optional query parameters
 
@@ -217,7 +196,6 @@ class TenantDatabaseManager:
 
         Raises:
             PermissionError: If tenant doesn't have warehouse credentials
-            Exception: If query fails
         """
         engine = self.get_tenant_engine(tenant_id)
 
@@ -238,16 +216,16 @@ class TenantDatabaseManager:
         Call this when tenant credentials are updated.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
         """
         if tenant_id in self._tenant_engines:
             try:
                 self._tenant_engines[tenant_id].dispose()
             except Exception as e:
-                logger.warning(f"Error disposing tenant engine: {e}")
+                logger.warning("Error disposing tenant engine: %s", e)
             finally:
                 del self._tenant_engines[tenant_id]
-                logger.info(f"Closed tenant engine for {tenant_id}")
+                logger.info("Closed tenant engine for %s", tenant_id)
 
     def close_all(self) -> None:
         """Close all cached tenant engines."""
@@ -274,7 +252,7 @@ def get_current_tenant_engine() -> Optional[Engine]:
     Returns:
         SQLAlchemy Engine for the current tenant, or None
     """
-    tenant_id = g.get("tenant_id")
+    tenant_id = g.get("tenant_id") if has_request_context() else None
     if not tenant_id:
         return None
     return get_tenant_db_manager().get_tenant_engine(tenant_id)
@@ -283,6 +261,7 @@ def get_current_tenant_engine() -> Optional[Engine]:
 # =============================================================================
 # Superset SQL Lab Integration Hook
 # =============================================================================
+
 
 def get_tenant_sqla_uri() -> Optional[str]:
     """
@@ -294,13 +273,13 @@ def get_tenant_sqla_uri() -> Optional[str]:
     Returns:
         Connection URI with tenant credentials, or None
     """
-    tenant_id = g.get("tenant_id")
+    from superset.multitenancy.models import Tenant
+
+    tenant_id = g.get("tenant_id") if has_request_context() else None
     if not tenant_id:
         return None
 
-    from .models import Tenant
-
-    tenant = Tenant.query.filter_by(tenant_id=tenant_id, is_active=True).first()
+    tenant = Tenant.query.filter_by(slug=tenant_id, is_active=True).first()
     if not tenant or not tenant.has_warehouse_credentials():
         return None
 
@@ -317,6 +296,7 @@ def get_tenant_sqla_uri() -> Optional[str]:
 # PostgreSQL User Setup Utilities
 # =============================================================================
 
+
 class TenantUserManager:
     """
     Utilities for managing per-tenant PostgreSQL users.
@@ -325,7 +305,7 @@ class TenantUserManager:
     appropriate permissions.
     """
 
-    def __init__(self, admin_engine: Engine):
+    def __init__(self, admin_engine: Engine) -> None:
         """
         Initialize with an admin database connection.
 
@@ -344,7 +324,7 @@ class TenantUserManager:
         Create a PostgreSQL user for a tenant with schema-restricted access.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
             password: Password for the new user
             schema: Schema name (defaults to tenant_{tenant_id})
 
@@ -355,39 +335,31 @@ class TenantUserManager:
         schema = schema or get_tenant_schema(tenant_id)
 
         with self.engine.connect() as conn:
-            # Create user
-            conn.execute(text(
-                f"CREATE USER {username} WITH PASSWORD :password"
-            ), {"password": password})
+            conn.execute(
+                text(f"CREATE USER {username} WITH PASSWORD :password"),
+                {"password": password},
+            )
 
-            # Revoke all default privileges
-            conn.execute(text(
-                f"REVOKE ALL ON SCHEMA public FROM {username}"
-            ))
+            conn.execute(text(f"REVOKE ALL ON SCHEMA public FROM {username}"))
 
-            # Grant CONNECT to database
             db_name = self.engine.url.database
-            conn.execute(text(
-                f"GRANT CONNECT ON DATABASE {db_name} TO {username}"
-            ))
+            conn.execute(text(f"GRANT CONNECT ON DATABASE {db_name} TO {username}"))
 
-            # Grant access only to tenant's schema
-            conn.execute(text(
-                f"GRANT USAGE ON SCHEMA {schema} TO {username}"
-            ))
-            conn.execute(text(
-                f"GRANT SELECT ON ALL TABLES IN SCHEMA {schema} TO {username}"
-            ))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA {schema} TO {username}"))
+            conn.execute(
+                text(f"GRANT SELECT ON ALL TABLES IN SCHEMA {schema} TO {username}")
+            )
 
-            # Ensure future tables in schema are also accessible
-            conn.execute(text(
-                f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                f"GRANT SELECT ON TABLES TO {username}"
-            ))
+            conn.execute(
+                text(
+                    f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                    f"GRANT SELECT ON TABLES TO {username}"
+                )
+            )
 
             conn.commit()
 
-        logger.info(f"Created tenant user {username} with access to {schema}")
+        logger.info("Created tenant user %s with access to %s", username, schema)
         return username
 
     def drop_tenant_user(self, tenant_id: str) -> None:
@@ -395,53 +367,54 @@ class TenantUserManager:
         Drop a tenant's PostgreSQL user.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
         """
         username = f"tenant_{tenant_id}_user"
 
         with self.engine.connect() as conn:
-            # Revoke privileges first
             conn.execute(text(f"DROP OWNED BY {username}"))
-            # Drop user
             conn.execute(text(f"DROP USER IF EXISTS {username}"))
             conn.commit()
 
-        logger.info(f"Dropped tenant user {username}")
+        logger.info("Dropped tenant user %s", username)
 
     def update_user_password(self, tenant_id: str, new_password: str) -> None:
         """
         Update a tenant user's password.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
             new_password: New password
         """
         username = f"tenant_{tenant_id}_user"
 
         with self.engine.connect() as conn:
-            conn.execute(text(
-                f"ALTER USER {username} WITH PASSWORD :password"
-            ), {"password": new_password})
+            conn.execute(
+                text(f"ALTER USER {username} WITH PASSWORD :password"),
+                {"password": new_password},
+            )
             conn.commit()
 
-        logger.info(f"Updated password for {username}")
+        logger.info("Updated password for %s", username)
 
     def verify_user_isolation(self, tenant_id: str, other_schema: str) -> bool:
         """
         Verify that a tenant user cannot access another schema.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
             other_schema: Schema that should NOT be accessible
 
         Returns:
             True if isolation is working (access denied)
         """
-        from .models import Tenant
+        from superset.multitenancy.models import Tenant
 
-        tenant = Tenant.query.filter_by(tenant_id=tenant_id).first()
+        tenant = Tenant.query.filter_by(slug=tenant_id).first()
         if not tenant or not tenant.has_warehouse_credentials():
-            logger.warning(f"Cannot verify isolation: tenant {tenant_id} not configured")
+            logger.warning(
+                "Cannot verify isolation: tenant %s not configured", tenant_id
+            )
             return False
 
         manager = get_tenant_db_manager()
@@ -452,23 +425,21 @@ class TenantUserManager:
 
         try:
             with engine.connect() as conn:
-                # Try to access another tenant's schema - this should fail
-                conn.execute(text(
-                    f"SELECT 1 FROM {other_schema}.any_table LIMIT 1"
-                ))
-            # If we get here, isolation is broken
+                conn.execute(
+                    text(f"SELECT 1 FROM {other_schema}.any_table LIMIT 1")
+                )
             logger.error(
-                f"SECURITY VIOLATION: {tenant_id} can access {other_schema}!"
+                "SECURITY VIOLATION: %s can access %s!", tenant_id, other_schema
             )
             return False
 
         except Exception as e:
-            # Permission denied = isolation working
             if "permission denied" in str(e).lower():
-                logger.info(f"Isolation verified: {tenant_id} cannot access {other_schema}")
+                logger.info(
+                    "Isolation verified: %s cannot access %s", tenant_id, other_schema
+                )
                 return True
-            # Other error - unclear
-            logger.warning(f"Isolation check inconclusive: {e}")
+            logger.warning("Isolation check inconclusive: %s", e)
             return False
 
     def generate_setup_sql(self, tenant_id: str, password: str) -> str:
@@ -478,7 +449,7 @@ class TenantUserManager:
         Use this to generate scripts for manual execution by DBAs.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier (slug)
             password: Password for the user
 
         Returns:

@@ -23,12 +23,11 @@ To create for a specific tenant only:
 import argparse
 import json
 import sys
-sys.path.insert(0, '/app/docker/pythonpath_dev')
 
 from flask import g
 
 from superset import create_app, db
-from keycloak_multi_tenant.metadata_isolation import tenant_context
+from superset.multitenancy.isolation import tenant_context
 
 app = create_app()
 
@@ -338,7 +337,7 @@ def create_dashboard(title, charts, layout, tenant_id, slug_suffix="overview"):
 def setup_tenant_dashboards(tenant_id):
     """Create datasets, charts, and dashboard for a tenant."""
     from superset.models.core import Database
-    from keycloak_multi_tenant.models import Tenant
+    from superset.multitenancy.models import Tenant
 
     print(f"\n{'='*60}")
     print(f"Setting up dashboards for tenant: {tenant_id}")
@@ -351,9 +350,9 @@ def setup_tenant_dashboards(tenant_id):
     with tenant_context(tenant_id):
         print(f"[SCHEMA] Set search_path = tenant_{tenant_id}, public")
 
-        # Verify tenant exists (for Keycloak integration)
+        # Verify tenant exists (for OAuth integration)
         # Note: Tenant table is in public schema, still accessible
-        tenant = db.session.query(Tenant).filter_by(tenant_id=tenant_id).first()
+        tenant = db.session.query(Tenant).filter_by(slug=tenant_id).first()
         if not tenant:
             print(f"[ERROR] Tenant '{tenant_id}' not found in database")
             return False
@@ -456,14 +455,14 @@ def main():
     args = parser.parse_args()
 
     with app.app_context():
-        from keycloak_multi_tenant.models import Tenant
+        from superset.multitenancy.models import Tenant
 
         if args.tenant:
             tenants = [args.tenant]
         else:
             # Get all active tenants
             all_tenants = db.session.query(Tenant).filter_by(is_active=True).all()
-            tenants = [t.tenant_id for t in all_tenants]
+            tenants = [t.slug for t in all_tenants]
 
         print("=" * 60)
         print("Tenant Dashboard Setup")

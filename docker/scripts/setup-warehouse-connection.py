@@ -15,13 +15,12 @@ Usage:
 """
 
 import sys
-sys.path.insert(0, '/app/docker/pythonpath_dev')
 
 from flask import g
 from sqlalchemy import text
 
 from superset import create_app, db
-from keycloak_multi_tenant.metadata_isolation import tenant_context
+from superset.multitenancy.isolation import tenant_context
 
 app = create_app()
 

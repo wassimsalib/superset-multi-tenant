@@ -1,19 +1,4 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
+# TODO: Add license header
 """
 Row-Level Security (RLS) helpers for external data isolation.
 
@@ -21,23 +6,27 @@ Provides Jinja template context functions for filtering external
 data queries by tenant.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Optional
 
-from flask import Flask, g
+from flask import Flask, g, has_request_context
 
 logger = logging.getLogger(__name__)
 
 
 def get_tenant_id() -> Optional[str]:
     """
-    Get the current tenant's string ID.
+    Get the current tenant's string ID (slug).
 
     Returns:
-        Tenant ID string (e.g., "customer1") or None
+        Tenant slug string (e.g., "customer1") or None
     """
+    if not has_request_context():
+        return None
     tenant = g.get("tenant")
-    return tenant.tenant_id if tenant else None
+    return tenant.slug if tenant else g.get("tenant_id")
 
 
 def get_tenant_db_id() -> Optional[int]:
@@ -47,6 +36,8 @@ def get_tenant_db_id() -> Optional[int]:
     Returns:
         Tenant database ID (integer) or None
     """
+    if not has_request_context():
+        return None
     tenant = g.get("tenant")
     return tenant.id if tenant else None
 
@@ -72,7 +63,7 @@ def tenant_filter(column: str = "tenant_id", quote_value: bool = True) -> str:
         logger.warning(
             "tenant_filter called without tenant context, returning false condition"
         )
-        return "1=0"  # No tenant = no data
+        return "1=0"
 
     if quote_value:
         return f"{column} = '{tenant_id}'"
@@ -105,7 +96,7 @@ def tenant_filter_int(column: str = "tenant_id") -> str:
     return f"{column} = {tenant_db_id}"
 
 
-def tenant_in_list(column: str, values_by_tenant: dict[str, list]) -> str:
+def tenant_in_list(column: str, values_by_tenant: dict[str, list[str]]) -> str:
     """
     Generate an IN clause based on tenant-specific value mappings.
 
@@ -115,7 +106,7 @@ def tenant_in_list(column: str, values_by_tenant: dict[str, list]) -> str:
 
     Args:
         column: Column name
-        values_by_tenant: Dict mapping tenant_id to list of allowed values
+        values_by_tenant: Dict mapping tenant slug to list of allowed values
 
     Returns:
         SQL IN clause
@@ -152,7 +143,7 @@ def get_tenant_schema() -> Optional[str]:
     """
     Get the PostgreSQL schema name for the current tenant.
 
-    Returns the schema name in the format "tenant_{tenant_id}".
+    Returns the schema name in the format "tenant_{slug}".
 
     Usage in SQL Lab:
         SELECT * FROM {{ current_tenant_schema() }}.sales
@@ -187,19 +178,18 @@ def register_tenant_jinja_context(app: Flask) -> None:
 
     # Also register with Superset's Jinja context
     try:
-        from superset.jinja_context import ExtraCache
-
-        # Add to the base context processors
         superset_jinja_context = app.config.get("JINJA_CONTEXT_ADDONS", {})
-        superset_jinja_context.update({
-            "current_tenant_id": get_tenant_id,
-            "current_tenant_db_id": get_tenant_db_id,
-            "current_tenant_schema": get_tenant_schema,
-            "tenant_filter": tenant_filter,
-            "tenant_filter_int": tenant_filter_int,
-            "tenant_in_list": tenant_in_list,
-            "tenant_value": tenant_value,
-        })
+        superset_jinja_context.update(
+            {
+                "current_tenant_id": get_tenant_id,
+                "current_tenant_db_id": get_tenant_db_id,
+                "current_tenant_schema": get_tenant_schema,
+                "tenant_filter": tenant_filter,
+                "tenant_filter_int": tenant_filter_int,
+                "tenant_in_list": tenant_in_list,
+                "tenant_value": tenant_value,
+            }
+        )
         app.config["JINJA_CONTEXT_ADDONS"] = superset_jinja_context
 
         logger.info("Registered tenant Jinja context functions")
