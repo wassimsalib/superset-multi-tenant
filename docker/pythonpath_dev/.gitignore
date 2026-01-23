@@ -22,3 +22,10 @@
 !superset_config.py
 !superset_config_docker_light.py
 !superset_config_local.example
+!superset_test_config_light.py
+
+# DON'T ignore the multi-tenant package
+!keycloak_multi_tenant/
+!keycloak_multi_tenant/**
+
+*.pyc

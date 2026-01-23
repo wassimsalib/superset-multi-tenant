@@ -1,0 +1,113 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Multi-Tenant Superset Configuration
+# Handles subdomain-based tenant routing (e.g., customer1.app.localhost)
+
+upstream superset_app {
+    server superset:8088;
+    keepalive 100;
+}
+
+upstream superset_websocket {
+    server superset-websocket:8080;
+    keepalive 100;
+}
+
+# Map to extract tenant from subdomain
+# Example: customer1.app.localhost -> customer1
+map $host $tenant {
+    ~^(?<subdomain>[^.]+)\.${MULTI_TENANT_BASE_DOMAIN}$ $subdomain;
+    default "";
+}
+
+# Multi-tenant server block - handles *.app.localhost
+server {
+    listen 80;
+    server_name ~^(?<tenant_subdomain>.+)\.${MULTI_TENANT_BASE_DOMAIN}$;
+
+    # Websocket endpoint
+    location /ws {
+        proxy_pass http://superset_websocket;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Tenant $tenant_subdomain;
+    }
+
+    # Static files (proxied to node dev server in development)
+    location ${SUPERSET_APP_ROOT}/static {
+        proxy_pass http://superset-node:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Tenant $tenant_subdomain;
+    }
+
+    # Main application
+    location ${SUPERSET_APP_ROOT} {
+        proxy_pass http://superset_app;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Tenant $tenant_subdomain;
+        proxy_http_version 1.1;
+        port_in_redirect off;
+        proxy_connect_timeout 300;
+    }
+}
+
+# Default server - handles base domain (app.localhost) and direct access
+server {
+    listen 80 default_server;
+    server_name _;
+
+    # Health check endpoint
+    location /health {
+        proxy_pass http://superset_app/health;
+        proxy_set_header Host $http_host;
+    }
+
+    # Websocket endpoint
+    location /ws {
+        proxy_pass http://superset_websocket;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $host;
+    }
+
+    # Static files
+    location ${SUPERSET_APP_ROOT}/static {
+        proxy_pass http://superset-node:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # Main application (will redirect to tenant not found if no subdomain)
+    location ${SUPERSET_APP_ROOT} {
+        proxy_pass http://superset_app;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        port_in_redirect off;
+        proxy_connect_timeout 300;
+    }
+}
