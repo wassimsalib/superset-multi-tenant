@@ -118,22 +118,23 @@ TEMPLATE_CHARTS = [
     },
     {
         "slice_name": "Customers by Industry",
-        "viz_type": "echarts_timeseries_bar",
+        "viz_type": "pie",
         "description": "Customer count by industry",
         "dataset": "customers",
         "params": {
             "datasource": None,
-            "viz_type": "dist_bar",
-            "metrics": [{"label": "Customer Count", "expressionType": "SQL", "sqlExpression": "COUNT(*)"}],
+            "viz_type": "pie",
+            "metric": {"label": "Customer Count", "expressionType": "SQL", "sqlExpression": "COUNT(*)"},
             "groupby": ["industry"],
             "row_limit": 50,
             "color_scheme": "supersetColors",
-            "show_legend": False,
-            "y_axis_format": ",d",
-            "x_axis_label": "Industry",
-            "y_axis_label": "Customers",
-            "bar_stacked": False,
-            "order_desc": True,
+            "show_legend": True,
+            "show_labels": True,
+            "label_type": "key_percent",
+            "number_format": ",d",
+            "donut": False,
+            "innerRadius": 30,
+            "outerRadius": 80,
         },
     },
     {
@@ -154,12 +155,14 @@ TEMPLATE_CHARTS = [
 ]
 
 # Dashboard layout (positions for a 12-column grid)
+# Row 1: Sales trend (wide) + Revenue pie
+# Row 2: KPIs + Customers pie
 DASHBOARD_LAYOUT = {
     "Sales Trend": {"col": 0, "row": 0, "size_x": 8, "size_y": 4},
     "Revenue by Region": {"col": 8, "row": 0, "size_x": 4, "size_y": 4},
-    "Total Revenue": {"col": 0, "row": 4, "size_x": 4, "size_y": 2},
-    "Monthly Orders": {"col": 4, "row": 4, "size_x": 4, "size_y": 2},
-    "Customers by Industry": {"col": 0, "row": 6, "size_x": 12, "size_y": 4},
+    "Total Revenue": {"col": 0, "row": 4, "size_x": 3, "size_y": 3},
+    "Monthly Orders": {"col": 3, "row": 4, "size_x": 3, "size_y": 3},
+    "Customers by Industry": {"col": 6, "row": 4, "size_x": 6, "size_y": 3},
 }
 
 # Acme-only unique chart
@@ -263,8 +266,7 @@ def create_dashboard(title, charts, layout, tenant_id, slug_suffix="overview"):
         print(f"  [EXISTS] Dashboard: {title} (slug: {slug})")
         return existing
 
-    # Build position JSON for the dashboard
-    # Superset uses a specific format for dashboard layouts
+    # Build position JSON for the dashboard (follows world_bank.py pattern)
     position_json = {
         "DASHBOARD_VERSION_KEY": "v2",
         "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
@@ -272,43 +274,50 @@ def create_dashboard(title, charts, layout, tenant_id, slug_suffix="overview"):
         "HEADER_ID": {"type": "HEADER", "id": "HEADER_ID", "meta": {"text": title}},
     }
 
-    # Add charts to layout
-    row_id = 0
+    # Group charts by row number so charts on same row share a ROW container
+    charts_by_row = {}
+    fallback_row = 0
     for chart in charts:
-        # Remove tenant suffix to match layout keys (e.g., "Sales Trend (demo)" -> "Sales Trend")
         base_name = chart.slice_name.rsplit(" (", 1)[0] if " (" in chart.slice_name else chart.slice_name
         chart_layout = layout.get(base_name, {})
         if not chart_layout:
-            chart_layout = {"col": 0, "row": row_id, "size_x": 6, "size_y": 4}
-            row_id += 4
+            chart_layout = {"col": 0, "row": fallback_row, "size_x": 6, "size_y": 50}
+            fallback_row += 1
 
-        chart_id = f"CHART-{chart.id}"
-        row_container_id = f"ROW-{chart.id}"
+        row_num = chart_layout.get("row", fallback_row)
+        if row_num not in charts_by_row:
+            charts_by_row[row_num] = []
+        charts_by_row[row_num].append((chart, chart_layout))
 
-        position_json[chart_id] = {
-            "type": "CHART",
-            "id": chart_id,
+    # Create ROW containers and add charts (sorted by row, then by col)
+    for row_num in sorted(charts_by_row.keys()):
+        row_charts = sorted(charts_by_row[row_num], key=lambda x: x[1].get("col", 0))
+        row_container_id = f"ROW-{row_num}"
+
+        position_json[row_container_id] = {
+            "type": "ROW",
+            "id": row_container_id,
             "children": [],
-            "parents": ["ROOT_ID", "GRID_ID", row_container_id],
-            "meta": {
-                "width": chart_layout.get("size_x", 6),
-                "height": chart_layout.get("size_y", 4) * 8,  # Convert to pixels roughly
-                "chartId": chart.id,
-                "sliceName": chart.slice_name,
-            },
+            "parents": ["ROOT_ID", "GRID_ID"],
+            "meta": {"background": "BACKGROUND_TRANSPARENT"},
         }
+        position_json["GRID_ID"]["children"].append(row_container_id)
 
-        if row_container_id not in position_json:
-            position_json[row_container_id] = {
-                "type": "ROW",
-                "id": row_container_id,
+        for chart, chart_layout in row_charts:
+            chart_id = f"CHART-{chart.id}"
+            position_json[chart_id] = {
+                "type": "CHART",
+                "id": chart_id,
                 "children": [],
-                "parents": ["ROOT_ID", "GRID_ID"],
-                "meta": {"background": "BACKGROUND_TRANSPARENT"},
+                "parents": ["ROOT_ID", "GRID_ID", row_container_id],
+                "meta": {
+                    "width": chart_layout.get("size_x", 6),
+                    "height": chart_layout.get("size_y", 4) * 12,
+                    "chartId": chart.id,
+                    "sliceName": chart.slice_name,
+                },
             }
-            position_json["GRID_ID"]["children"].append(row_container_id)
-
-        position_json[row_container_id]["children"].append(chart_id)
+            position_json[row_container_id]["children"].append(chart_id)
 
     dashboard = Dashboard(
         dashboard_title=title,
@@ -317,7 +326,6 @@ def create_dashboard(title, charts, layout, tenant_id, slug_suffix="overview"):
         published=True,
     )
 
-    # Link charts
     dashboard.slices = charts
 
     db.session.add(dashboard)
