@@ -1,0 +1,263 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# -----------------------------------------------------------------------
+# Multi-Tenant Superset Docker Compose
+#
+# This extends the base docker-compose.yml with multi-tenancy support:
+# - Uses superset_config_multitenant.py configuration
+# - Mounts superset-multitenancy package
+# - Mounts tenants.json from dev-infra
+# - Nginx for subdomain routing (*.app.localhost)
+# - Connects to multitenant-net for dev-infra integration
+# -----------------------------------------------------------------------
+
+x-superset-user: &superset-user root
+x-superset-volumes: &superset-volumes
+  - ./docker:/app/docker
+  - ./superset:/app/superset
+  - ./superset-core:/app/superset-core
+  - ./superset-frontend:/app/superset-frontend
+  - superset_home:/app/superset_home
+  - ./tests:/app/tests
+  - superset_data:/app/data
+  # Multi-tenancy additions
+  - ../superset-multitenancy:/app/superset-multitenancy
+
+x-superset-environment: &superset-environment
+  SUPERSET_CONFIG_PATH: /app/docker/pythonpath_dev/superset_config_multitenant.py
+  MULTI_TENANCY_ENABLED: "true"
+  MULTI_TENANT_BASE_DOMAIN: app.localhost
+  # Trust X-Forwarded-* headers from nginx reverse proxy
+  TRUST_PROXY_HEADERS: "true"
+
+x-common-build: &common-build
+  context: .
+  target: ${SUPERSET_BUILD_TARGET:-dev}
+  cache_from:
+    - apache/superset-cache:3.10-slim-trixie
+  args:
+    DEV_MODE: "true"
+    INCLUDE_CHROMIUM: ${INCLUDE_CHROMIUM:-false}
+    INCLUDE_FIREFOX: ${INCLUDE_FIREFOX:-false}
+    BUILD_TRANSLATIONS: ${BUILD_TRANSLATIONS:-false}
+
+services:
+  nginx:
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    image: nginx:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./docker/nginx/nginx-multitenant.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - superset-net
+    depends_on:
+      - superset
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis:/data
+    networks:
+      - superset-net
+
+  db:
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${DATABASE_PORT:-5432}:5432"
+    volumes:
+      - db_home:/var/lib/postgresql/data
+      - ./docker/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    networks:
+      - superset-net
+      - multitenant-net
+
+  superset:
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    environment:
+      <<: *superset-environment
+    build:
+      <<: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "app"]
+    restart: unless-stopped
+    ports:
+      - ${SUPERSET_PORT:-8088}:8088
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    user: *superset-user
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    volumes: *superset-volumes
+    networks:
+      - superset-net
+      - multitenant-net
+
+  superset-websocket:
+    build: ./superset-websocket
+    ports:
+      - ${WEBSOCKET_PORT:-8080}:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+    volumes:
+      - ./superset-websocket:/home/superset-websocket
+      - /home/superset-websocket/node_modules
+      - /home/superset-websocket/dist
+      - ./docker/superset-websocket/config.example.json:/home/superset-websocket/config.json:ro
+    environment:
+      - PORT=8080
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+    networks:
+      - superset-net
+
+  superset-init:
+    build:
+      <<: *common-build
+    command: ["/app/docker/docker-init.sh"]
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    environment:
+      <<: *superset-environment
+      SUPERSET_LOAD_EXAMPLES: "no"
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+    user: *superset-user
+    volumes: *superset-volumes
+    healthcheck:
+      disable: true
+    networks:
+      - superset-net
+      - multitenant-net
+
+  superset-node:
+    build:
+      context: .
+      target: superset-node
+      args:
+        DEV_MODE: "true"
+        BUILD_TRANSLATIONS: ${BUILD_TRANSLATIONS:-false}
+    environment:
+      BUILD_SUPERSET_FRONTEND_IN_DOCKER: true
+      NPM_RUN_PRUNE: false
+      SCARF_ANALYTICS: "${SCARF_ANALYTICS:-}"
+      superset: "http://superset:8088"
+      WEBPACK_DEVSERVER_HOST: "0.0.0.0"
+    ports:
+      - "127.0.0.1:${NODE_PORT:-9000}:9000"
+    command: ["/app/docker/docker-frontend.sh"]
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    volumes: *superset-volumes
+    networks:
+      - superset-net
+
+  superset-worker:
+    build:
+      <<: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "worker"]
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    environment:
+      <<: *superset-environment
+      CELERYD_CONCURRENCY: 2
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    user: *superset-user
+    volumes: *superset-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
+    networks:
+      - superset-net
+      - multitenant-net
+
+  superset-worker-beat:
+    build:
+      <<: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "beat"]
+    env_file:
+      - path: docker/.env
+        required: true
+      - path: docker/.env-local
+        required: false
+    environment:
+      <<: *superset-environment
+    restart: unless-stopped
+    depends_on:
+      - superset-worker
+    user: *superset-user
+    volumes: *superset-volumes
+    healthcheck:
+      disable: true
+    networks:
+      - superset-net
+
+volumes:
+  superset_home:
+    external: false
+  db_home:
+    external: false
+  redis:
+    external: false
+  superset_data:
+    external: false
+
+networks:
+  superset-net:
+    driver: bridge
+  multitenant-net:
+    external: true

@@ -25,6 +25,12 @@ if [ "$DEV_MODE" == "true" ]; then
       echo "Installing superset-core in editable mode"
       uv pip install --no-deps -e /app/superset-core
 
+      # Install superset-multitenancy if available
+      if [ -d "/app/superset-multitenancy" ]; then
+        echo "Installing superset-multitenancy in editable mode"
+        uv pip install -e /app/superset-multitenancy
+      fi
+
       # Only reinstall the main app for non-worker processes
       if [ "$1" != "worker" ] && [ "$1" != "beat" ]; then
         echo "Reinstalling the app in editable mode"

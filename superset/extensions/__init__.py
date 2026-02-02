@@ -22,15 +22,30 @@ import celery
 from flask import Flask
 from flask_appbuilder import AppBuilder
 
-# Temporary fix for missing flask_appbuilder.utils.legacy module
-try:
-    from flask_appbuilder.utils.legacy import get_sqla_class
-except ImportError:
-    # Fallback if legacy module doesn't exist
-    from flask_sqlalchemy import SQLAlchemy
+def get_sqla_class() -> Any:
+    """Get SQLAlchemy class for database connections.
 
-    def get_sqla_class() -> Any:
-        return SQLAlchemy
+    Returns MultiTenantSQLAlchemy if available, otherwise falls back to standard SQLAlchemy.
+
+    Set MULTI_TENANCY_REQUIRED=true to crash on startup if multi-tenant support
+    is unavailable, preventing accidental single-tenant operation.
+    """
+    try:
+        from superset_multitenancy.db import MultiTenantSQLAlchemy
+        return MultiTenantSQLAlchemy
+    except ImportError:
+        if os.environ.get("MULTI_TENANCY_REQUIRED", "").lower() == "true":
+            raise RuntimeError(
+                "Multi-tenancy required but superset_multitenancy not installed"
+            )
+
+        # Single-tenant fallback
+        try:
+            from flask_appbuilder.utils.legacy import get_sqla_class as _get_sqla_class
+            return _get_sqla_class()
+        except ImportError:
+            from flask_sqlalchemy import SQLAlchemy
+            return SQLAlchemy
 
 
 from flask_caching.backends.base import BaseCache
