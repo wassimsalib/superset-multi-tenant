@@ -96,8 +96,12 @@ export class AuthPage {
    *
    * @param options - Optional wait options
    */
-  async waitForLoginSuccess(options?: { timeout?: number }): Promise<void> {
+  async waitForLoginSuccess(options?: {
+    timeout?: number;
+    requireLoginRequest?: boolean;
+  }): Promise<void> {
     const timeout = options?.timeout ?? TIMEOUT.PAGE_LOAD;
+    const requireLoginRequest = options?.requireLoginRequest ?? true;
     const startTime = Date.now();
 
     // 1. Guard: Check if session cookie already exists (race condition protection)
@@ -107,18 +111,20 @@ export class AuthPage {
       return;
     }
 
-    // 2. Wait for POST /login/ response (bounded by caller's timeout)
-    const loginResponse = await this.page.waitForResponse(
-      response =>
-        response.url().includes('/login/') &&
-        response.request().method() === 'POST',
-      { timeout },
-    );
+    if (requireLoginRequest) {
+      // 2. Wait for POST /login/ response (bounded by caller's timeout)
+      const loginResponse = await this.page.waitForResponse(
+        response =>
+          response.url().includes('/login/') &&
+          response.request().method() === 'POST',
+        { timeout },
+      );
 
-    // 3. Verify it's a redirect (3xx status code indicates successful login)
-    const status = loginResponse.status();
-    if (status < 300 || status >= 400) {
-      throw new Error(`Login failed: expected redirect (3xx), got ${status}`);
+      // 3. Verify it's a redirect (3xx status code indicates successful login)
+      const status = loginResponse.status();
+      if (status < 300 || status >= 400) {
+        throw new Error(`Login failed: expected redirect (3xx), got ${status}`);
+      }
     }
 
     // 4. Poll for session cookie to appear (HttpOnly cookie, not accessible via document.cookie)
@@ -153,11 +159,15 @@ export class AuthPage {
   }
 
   /**
-   * Get the session cookie specifically
+   * Get the session cookie specifically.
+   * Checks for both 'session' (default Flask) and 'superset_session' (multi-tenant config).
    */
   async getSessionCookie(): Promise<Cookie | null> {
     const cookies = await this.page.context().cookies();
-    return cookies.find(c => c.name === 'session') || null;
+    return (
+      cookies.find(c => c.name === 'session' || c.name === 'superset_session') ||
+      null
+    );
   }
 
   /**

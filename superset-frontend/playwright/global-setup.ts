@@ -26,6 +26,7 @@ import {
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import { AuthPage } from './pages/AuthPage';
+import { KeycloakPage } from './pages/KeycloakPage';
 import { TIMEOUT } from './utils/constants';
 
 /**
@@ -44,6 +45,8 @@ async function globalSetup(config: FullConfig) {
   // Test credentials - can be overridden via environment variables
   const adminUsername = process.env.PLAYWRIGHT_ADMIN_USERNAME || 'admin';
   const adminPassword = process.env.PLAYWRIGHT_ADMIN_PASSWORD || 'general';
+  const loginStrategy =
+    process.env.PLAYWRIGHT_LOGIN_STRATEGY?.toLowerCase() || 'superset';
 
   console.log('[Global Setup] Authenticating as admin user...');
 
@@ -65,10 +68,22 @@ async function globalSetup(config: FullConfig) {
     // Use AuthPage to handle login logic (DRY principle)
     const authPage = new AuthPage(page);
     await authPage.goto();
-    await authPage.waitForLoginForm();
-    await authPage.loginWithCredentials(adminUsername, adminPassword);
-    // Use longer timeout for global setup (cold CI starts may exceed PAGE_LOAD timeout)
-    await authPage.waitForLoginSuccess({ timeout: TIMEOUT.GLOBAL_SETUP });
+
+    if (loginStrategy === 'keycloak') {
+      const keycloakPage = new KeycloakPage(page);
+      await keycloakPage.waitForLoginForm();
+      await keycloakPage.loginWithCredentials(adminUsername, adminPassword);
+      await keycloakPage.waitForRedirectToSuperset(baseURL, TIMEOUT.GLOBAL_SETUP);
+      await authPage.waitForLoginSuccess({
+        timeout: TIMEOUT.GLOBAL_SETUP,
+        requireLoginRequest: false,
+      });
+    } else {
+      await authPage.waitForLoginForm();
+      await authPage.loginWithCredentials(adminUsername, adminPassword);
+      // Use longer timeout for global setup (cold CI starts may exceed PAGE_LOAD timeout)
+      await authPage.waitForLoginSuccess({ timeout: TIMEOUT.GLOBAL_SETUP });
+    }
 
     // Save authentication state for all tests to reuse
     const authStatePath = 'playwright/.auth/user.json';
