@@ -66,7 +66,7 @@ services:
     image: nginx:latest
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "${NGINX_PORT:-8080}:80"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -83,6 +83,8 @@ services:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["sh", "-c", "touch /data/users.acl && redis-server /usr/local/etc/redis/redis.conf"]
     networks:
       - superset-net
 
@@ -95,7 +97,7 @@ services:
     image: postgres:16
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${DATABASE_PORT:-5432}:5432"
+      - "127.0.0.1:${SUPERSET_METADATA_DB_PORT:-5433}:5432"
     volumes:
       - db_home:/var/lib/postgresql/data
       - ./docker/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
@@ -128,26 +130,28 @@ services:
       - superset-net
       - multitenant-net
 
-  superset-websocket:
-    build: ./superset-websocket
-    ports:
-      - ${WEBSOCKET_PORT:-8080}:8080
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - redis
-    volumes:
-      - ./superset-websocket:/home/superset-websocket
-      - /home/superset-websocket/node_modules
-      - /home/superset-websocket/dist
-      - ./docker/superset-websocket/config.example.json:/home/superset-websocket/config.json:ro
-    environment:
-      - PORT=8080
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_SSL=false
-    networks:
-      - superset-net
+  # superset-websocket: DISABLED - requires GLOBAL_ASYNC_QUERIES config
+  # Uncomment and configure JWT secrets if you need live SQL Lab query updates
+  # superset-websocket:
+  #   build: ./superset-websocket
+  #   ports:
+  #     - ${WEBSOCKET_PORT:-8080}:8080
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   depends_on:
+  #     - redis
+  #   volumes:
+  #     - ./superset-websocket:/home/superset-websocket
+  #     - /home/superset-websocket/node_modules
+  #     - /home/superset-websocket/dist
+  #     - ./docker/superset-websocket/config.example.json:/home/superset-websocket/config.json:ro
+  #   environment:
+  #     - PORT=8080
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - REDIS_SSL=false
+  #   networks:
+  #     - superset-net
 
   superset-init:
     build:
@@ -220,7 +224,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"]
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME",
+        ]
     networks:
       - superset-net
       - multitenant-net

@@ -715,7 +715,7 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     # Enable embedded Superset functionality
     # @lifecycle: stable
     # @category: runtime_config
-    "EMBEDDED_SUPERSET": False,
+    "EMBEDDED_SUPERSET": True,
     # Enable Jinja templating in SQL queries
     # @lifecycle: stable
     # @category: runtime_config
